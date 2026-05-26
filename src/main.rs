@@ -82,7 +82,7 @@ fn proc(
         return Ok(());
     }
 
-    let src_enc = if source_encoding.eq_ignore_ascii_case("auto") {
+    let source_enc = if source_encoding.eq_ignore_ascii_case("auto") {
         let name = detect_encoding(&data[..data.len().min(2048)])
             .ok_or("cannot determine source-encoding")?;
         parse_encoding(&name).ok_or_else(|| format!("unsupported detected encoding: {name}"))?
@@ -91,12 +91,12 @@ fn proc(
             .ok_or_else(|| format!("invalid source encoding: {source_encoding}"))?
     };
 
-    if file != "-" && overwrite && src_enc == target_enc {
+    if file != "-" && overwrite && source_enc == target_enc {
         eprintln!("no changes, source file {file} is already in target encoding");
         return Ok(());
     }
 
-    let (decoded, _, _) = src_enc.decode(&data);
+    let (decoded, _, _) = source_enc.decode(&data);
     let (encoded, _, _) = target_enc.encode(&decoded);
 
     if file != "-" && overwrite {
