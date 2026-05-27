@@ -40,7 +40,13 @@ fn detect_encoding(data: &[u8]) -> Option<String> {
     if result.0.is_empty() {
         None
     } else {
-        Some(result.0.to_string())
+        Some(result.0.to_string()).map(|name| {
+            if name.eq_ignore_ascii_case("GB2312") {
+                "GB18030".to_string()
+            } else {
+                name
+            }
+        })
     }
 }
 
@@ -162,5 +168,4 @@ static ENCODINGS: &[&str] = &[
     "euc-jp", "iso-2022-jp", "shift_jis",
     "euc-kr",
     "utf-16be", "utf-16le", "utf-16",
-    "x-user-defined",
 ];
