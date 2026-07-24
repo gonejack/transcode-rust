@@ -54,15 +54,9 @@ fn parse_encoding(name: &str) -> Option<&'static Encoding> {
     Encoding::for_label(name.as_bytes())
 }
 
-fn proc(
-    file: &str,
-    source_encoding: &str,
-    target_encoding: &str,
-    detect_only: bool,
-    overwrite: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let target_enc = parse_encoding(target_encoding)
-        .ok_or_else(|| format!("invalid target encoding: {target_encoding}"))?;
+#[rustfmt::skip]
+fn proc(file: &str, source_encoding: &str, target_encoding: &str, detect_only: bool, overwrite: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let target_enc = parse_encoding(target_encoding).ok_or_else(|| format!("invalid target encoding: {target_encoding}"))?;
 
     let data = if file == "-" {
         let mut buf = Vec::new();
@@ -89,12 +83,10 @@ fn proc(
     }
 
     let source_enc = if source_encoding.eq_ignore_ascii_case("auto") {
-        let name = detect_encoding(&data[..data.len().min(2048)])
-            .ok_or("cannot determine source-encoding")?;
+        let name = detect_encoding(&data[..data.len().min(2048)]).ok_or("cannot determine source-encoding")?;
         parse_encoding(&name).ok_or_else(|| format!("unsupported detected encoding: {name}"))?
     } else {
-        parse_encoding(source_encoding)
-            .ok_or_else(|| format!("invalid source encoding: {source_encoding}"))?
+        parse_encoding(source_encoding).ok_or_else(|| format!("invalid source encoding: {source_encoding}"))?
     };
 
     if file != "-" && overwrite && source_enc == target_enc {
@@ -145,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opts.detect_encoding,
             opts.overwrite,
         )
-        .map_err(|e| format!("process {file} failed: {e}"))?;
+            .map_err(|e| format!("process {file} failed: {e}"))?;
     }
 
     Ok(())
