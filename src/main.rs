@@ -54,7 +54,6 @@ fn parse_encoding(name: &str) -> Option<&'static Encoding> {
     Encoding::for_label(name.as_bytes())
 }
 
-#[rustfmt::skip]
 fn proc(file: &str, source_encoding: &str, target_encoding: &str, detect_only: bool, overwrite: bool) -> Result<(), Box<dyn std::error::Error>> {
     let target_enc = parse_encoding(target_encoding).ok_or_else(|| format!("invalid target encoding: {target_encoding}"))?;
 
@@ -130,13 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     for file in &files {
-        proc(
-            file,
-            &opts.source_encoding,
-            &opts.target_encoding,
-            opts.detect_encoding,
-            opts.overwrite,
-        )
+        proc(file, &opts.source_encoding, &opts.target_encoding, opts.detect_encoding, opts.overwrite)
             .map_err(|e| format!("process {file} failed: {e}"))?;
     }
 
