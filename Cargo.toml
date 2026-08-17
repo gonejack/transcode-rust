@@ -7,7 +7,9 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 encoding_rs = "0.8"
+encoding_rs_rw = "0.4"
 chardet = "0.2"
+tempfile = "3"
 
 [[test]]
 name = "integration"
