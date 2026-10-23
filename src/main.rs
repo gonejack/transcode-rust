@@ -1,67 +1,58 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, ensure};
 use chardet::detect;
 use clap::Parser;
 use encoding_rs::Encoding;
 use encoding_rs_rw::{DecodingReader, EncodingWriter};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, Write};
 
-const DETECTION_SAMPLE_SIZE: u64 = 2048;
+const SAMPLE_SIZE: u64 = 2048;
+type Enc = &'static Encoding;
 
 #[derive(Parser)]
 #[command(name = "transcode", about = "Translate text encoding.")]
 struct Options {
     /// Set source encoding, default as auto-detection.
-    #[arg(short = 's', long, default_value = "auto")]
+    #[arg(short, long, default_value = "auto")]
     source_encoding: String,
-
     /// Set target encoding, default as utf8.
-    #[arg(short = 't', long, default_value = "utf-8")]
+    #[arg(short, long, default_value = "utf-8")]
     target_encoding: String,
-
     /// Detect encoding only.
-    #[arg(short = 'd', long)]
+    #[arg(short, long)]
     detect_encoding: bool,
-
     /// Overwrite source file.
     #[arg(short = 'w', long)]
     overwrite: bool,
-
     /// List supported encodings.
-    #[arg(short = 'l', long)]
+    #[arg(short, long)]
     list_encodings: bool,
-
     /// Show about.
     #[arg(long)]
     about: bool,
-
     #[arg(value_name = "FILE")]
     files: Vec<String>,
 }
 
 fn detect_encoding(data: &[u8]) -> Option<String> {
-    let (name, _, _) = detect(data);
-    if name.is_empty() {
-        return None;
+    let (name, ..) = detect(data);
+    if name.eq_ignore_ascii_case("gb2312") {
+        return Some("GB18030".into());
     }
-
-    Some(if name.eq_ignore_ascii_case("GB2312") { "GB18030".into() } else { name })
+    (!name.is_empty()).then_some(name)
 }
 
-fn parse_encoding(name: &str) -> Option<&'static Encoding> {
-    Encoding::for_label(name.as_bytes())
+fn encoding(name: &str) -> Result<Enc> {
+    Encoding::for_label(name.as_bytes()).ok_or_else(|| anyhow!("unsupported encoding: {name}"))
 }
 
-fn proc(file: &str, source_encoding: &str, target_encoding: &str, detect_only: bool, overwrite: bool) -> Result<()> {
-    let target_enc = parse_encoding(target_encoding).ok_or_else(|| anyhow!("invalid target encoding: {target_encoding}"))?;
-
+fn proc(opts: &Options, file: &str) -> Result<()> {
+    let target = encoding(&opts.target_encoding)?;
     let mut input: Box<dyn Read> = if file == "-" {
         Box::new(io::stdin())
     } else {
         let meta = fs::metadata(file)?;
-        if !meta.is_file() {
-            bail!("not a regular file");
-        }
+        ensure!(meta.is_file(), "not a regular file");
         if meta.len() == 0 {
             eprintln!("no changes, source file {file} is empty");
             return Ok(());
@@ -69,73 +60,58 @@ fn proc(file: &str, source_encoding: &str, target_encoding: &str, detect_only: b
         Box::new(File::open(file)?)
     };
 
-    let mut prefix = Vec::new();
-    if detect_only || source_encoding.eq_ignore_ascii_case("auto") {
-        input.by_ref().take(DETECTION_SAMPLE_SIZE).read_to_end(&mut prefix)?;
+    let auto = opts.source_encoding.eq_ignore_ascii_case("auto");
+    let mut sample = Vec::new();
+    if auto || opts.detect_encoding {
+        input.by_ref().take(SAMPLE_SIZE).read_to_end(&mut sample)?;
     }
 
-    if detect_only {
-        let Some(encoding) = detect_encoding(&prefix) else {
+    if opts.detect_encoding {
+        let Some(name) = detect_encoding(&sample) else {
             eprintln!("detecting encoding of file {file} failed");
             return Ok(());
         };
-
-        println!("encoding of file {file} is {encoding}");
+        println!("encoding of file {file} is {name}");
         return Ok(());
     }
 
-    let source_enc = if source_encoding.eq_ignore_ascii_case("auto") {
-        let Some(name) = detect_encoding(&prefix) else {
-            bail!("cannot determine source-encoding");
-        };
-
-        parse_encoding(&name).ok_or_else(|| anyhow!("unsupported detected encoding: {name}"))?
+    let source = if auto {
+        let name = detect_encoding(&sample).context("cannot determine source-encoding")?;
+        encoding(&name)?
     } else {
-        parse_encoding(source_encoding).ok_or_else(|| anyhow!("invalid source encoding: {source_encoding}"))?
+        encoding(&opts.source_encoding)?
     };
 
-    if file != "-" && overwrite && source_enc == target_enc {
+    let in_place = file != "-" && opts.overwrite;
+    if in_place && source == target {
         eprintln!("no changes, source file {file} is already in target encoding");
         return Ok(());
     }
 
-    let input = BufReader::new(Cursor::new(prefix).chain(input));
-
-    if file != "-" && overwrite {
+    let input = BufReader::new(Cursor::new(sample).chain(input));
+    if in_place {
         let mut tmp = tempfile::tempfile()?;
-        transcode_stream(input, &mut tmp, source_enc, target_enc)?;
+        transcode(input, &mut tmp, source, target)?;
         tmp.rewind()?;
-
-        let mut output = OpenOptions::new().write(true).truncate(true).open(file)?;
+        let mut output = File::options().write(true).truncate(true).open(file)?;
         io::copy(&mut tmp, &mut output)?;
         output.flush()?;
     } else {
-        let stdout = io::stdout();
-        transcode_stream(input, stdout.lock(), source_enc, target_enc)?;
+        transcode(input, io::stdout().lock(), source, target)?;
     }
 
     Ok(())
 }
 
-fn transcode_stream(
-    input: impl BufRead,
-    output: impl Write,
-    source_enc: &'static Encoding,
-    target_enc: &'static Encoding,
-) -> Result<()> {
-    let mut decoder = DecodingReader::new(input, source_enc.new_decoder());
-    let mut encoder = EncodingWriter::new(output, target_enc.new_encoder());
-
-    {
-        let mut decoded = decoder.lossy();
-        let mut encoded = encoder.with_unmappable_handler(|error, output| {
-            write!(output, "&#{};", u32::from(error.value()))
-        });
-        io::copy(&mut decoded, &mut encoded)?;
-        encoded.flush()?;
-    }
-
-    encoder.finish().map_err(|_| anyhow!("failed to finish target encoding"))?;
+fn transcode(input: impl BufRead, output: impl Write, src: Enc, dst: Enc) -> Result<()> {
+    let mut decoder = DecodingReader::new(input, src.new_decoder());
+    let mut enc = EncodingWriter::new(output, dst.new_encoder());
+    let mut decoded = decoder.lossy();
+    let mut out = enc.with_unmappable_handler(|e, w| write!(w, "&#{};", u32::from(e.value())));
+    io::copy(&mut decoded, &mut out)?;
+    out.flush()?;
+    drop(out);
+    ensure!(enc.finish().is_ok(), "failed to finish target encoding");
     Ok(())
 }
 
@@ -148,21 +124,13 @@ fn main() -> Result<()> {
     }
 
     if opts.list_encodings {
-        println!("Supported encodings:");
-        for name in ENCODINGS {
-            println!("{name}");
-        }
+        println!("Supported encodings:\n{}", ENCODINGS.join("\n"));
         return Ok(());
     }
 
-    let files = opts.files.iter().map(String::as_str).chain(opts.files.is_empty().then_some("-"));
-
-    for file in files {
-        proc(file, &opts.source_encoding, &opts.target_encoding, opts.detect_encoding, opts.overwrite)
-            .map_err(|e| anyhow!("process {file} failed: {e}"))?;
-    }
-
-    Ok(())
+    let fallback = opts.files.is_empty().then_some("-");
+    let mut files = opts.files.iter().map(String::as_str).chain(fallback);
+    files.try_for_each(|f| proc(&opts, f).with_context(|| format!("process {f} failed")))
 }
 
 #[rustfmt::skip]
